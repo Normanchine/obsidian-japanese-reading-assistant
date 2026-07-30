@@ -1,0 +1,11 @@
+node_modules/
+main.js
+tests/.generated/
+*.log
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+data.json

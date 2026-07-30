@@ -1,0 +1,33 @@
+{
+  "name": "obsidian-japanese-reading-assistant",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Obsidian Japanese reading assistant with DeepSeek and Ollama providers.",
+  "license": "MIT",
+  "author": "Yicong Zhang",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Normanchine/obsidian-japanese-reading-assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Normanchine/obsidian-japanese-reading-assistant/issues"
+  },
+  "homepage": "https://github.com/Normanchine/obsidian-japanese-reading-assistant#readme",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "test": "node esbuild.test.config.mjs && node --test tests/core.test.mjs",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
+    "@types/node": "^24.0.0",
+    "builtin-modules": "^5.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "1.13.1",
+    "typescript": "^5.8.0"
+  }
+}
