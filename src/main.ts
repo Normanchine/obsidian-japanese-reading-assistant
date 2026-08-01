@@ -1,10 +1,12 @@
 import {
   Component,
+  ItemView,
   MarkdownView,
   Menu,
   Notice,
   Plugin,
   type Editor,
+  type WorkspaceLeaf,
 } from "obsidian";
 import {
   classifySelection,
@@ -17,9 +19,16 @@ import {
 import { FloatingResultPopup } from "./popup";
 import {
   analyzeJapanese,
+  checkPaddleOcrService,
   listDeepSeekModels,
   listOllamaModels,
+  recognizeJapaneseFromImage,
+  restartPaddleOcrService,
 } from "./providers";
+import {
+  capturePdfRegion,
+  findPdfPageCanvas,
+} from "./pdf-ocr";
 import { createEditorSelectionExtension } from "./selection-extension";
 import { JapaneseReadingSettingTab } from "./settings";
 import type {
@@ -33,23 +42,117 @@ import type {
 } from "./types";
 
 const DEFAULT_SETTINGS: JapaneseReadingSettings = {
-  schemaVersion: 1,
+  schemaVersion: 6,
   provider: "ollama",
   deepseekApiKey: "",
   deepseekBaseUrl: "https://api.deepseek.com",
   deepseekModel: "deepseek-v4-flash",
   ollamaBaseUrl: "http://127.0.0.1:11434",
   ollamaModel: "qwen2.5:7b",
+  ocrProvider: "paddle",
+  paddleOcrBaseUrl: "http://127.0.0.1:7861",
+  ocrOllamaModel: "glm-ocr",
+  pdfOcrDefaultMode: "sentence",
+  pdfOcrReviewBeforeAnalyze: false,
   autoTrigger: true,
-  triggerModifier: "none",
+  triggerModifier: "ctrl",
   triggerDelayMs: 300,
   maxSelectionCharacters: 500,
   requestTimeoutSeconds: 60,
   cacheSize: 60,
 };
 const DEEPSEEK_SECRET_ID = "japanese-reading-assistant-deepseek-key";
+const PDF_OCR_VIEW_TYPE = "japanese-reading-assistant-pdf-ocr";
 
 type AutomaticSelectionSource = "editor" | "preview";
+
+export class PdfOcrControlView extends ItemView {
+  private status = "待命：在 PDF 页面按住 Alt 并拖动框选。";
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    private readonly plugin: JapaneseReadingAssistantPlugin,
+  ) {
+    super(leaf);
+  }
+
+  getViewType(): string {
+    return PDF_OCR_VIEW_TYPE;
+  }
+
+  getDisplayText(): string {
+    return "日语阅读助手";
+  }
+
+  getIcon(): string {
+    return "scan-text";
+  }
+
+  async onOpen(): Promise<void> {
+    this.render();
+  }
+
+  setStatus(status: string): void {
+    this.status = status;
+    this.render();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("jra-pdf-ocr-panel");
+    contentEl.createEl("h4", { text: "日语阅读助手" });
+    contentEl.createEl("p", {
+      text: "Ctrl + 拖选日文：文字解析。Alt + 拖框 PDF：OCR 解析。Alt + M：显示此面板。",
+      cls: "setting-item-description",
+    });
+    const modeLabel = contentEl.createEl("label", {
+      text: "识别后默认操作",
+      cls: "jra-pdf-ocr-panel__label",
+    });
+    const mode = contentEl.createEl("select", {
+      cls: "dropdown jra-pdf-ocr-panel__mode",
+    });
+    mode.setAttr("aria-label", "PDF OCR 默认解析方式");
+    mode.createEl("option", { value: "sentence", text: "句子解析" });
+    mode.createEl("option", { value: "word", text: "词语翻译" });
+    mode.value = this.plugin.settings.pdfOcrDefaultMode;
+    mode.addEventListener("change", () => {
+      this.plugin.settings.pdfOcrDefaultMode = mode.value as AnalysisMode;
+      void this.plugin.saveSettings();
+      this.setStatus(
+        `已设为默认${mode.value === "sentence" ? "句子解析" : "词语翻译"}。`,
+      );
+    });
+    modeLabel.appendChild(mode);
+
+    const reviewLabel = contentEl.createEl("label", {
+      cls: "jra-pdf-ocr-panel__review",
+    });
+    const review = reviewLabel.createEl("input", { type: "checkbox" });
+    review.checked = this.plugin.settings.pdfOcrReviewBeforeAnalyze;
+    review.addEventListener("change", () => {
+      this.plugin.settings.pdfOcrReviewBeforeAnalyze = review.checked;
+      void this.plugin.saveSettings();
+      this.setStatus(
+        review.checked ? "OCR 后会先显示校对文本。" : "OCR 后会直接进入默认解析。",
+      );
+    });
+    reviewLabel.appendText(" OCR 后先校对文本");
+
+    const ocrButton = contentEl.createEl("button", {
+      text: "OCR 框选并解析",
+      cls: "mod-cta jra-pdf-ocr-panel__button",
+    });
+    ocrButton.addEventListener("click", () => {
+      void this.plugin.startPdfOcrFromPanel();
+    });
+    contentEl.createEl("p", {
+      text: this.status,
+      cls: "jra-pdf-ocr-panel__status",
+    });
+  }
+}
 
 interface CompletedModifierGesture {
   modifierAllowed: boolean;
@@ -116,10 +219,11 @@ function normalizeLoadedSettings(rawValue: unknown): JapaneseReadingSettings {
     legacyModel === "deepseek-chat" || legacyModel === "deepseek-reasoner"
       ? "deepseek-v4-flash"
       : legacyModel || DEFAULT_SETTINGS.deepseekModel;
-  const modifier = raw.triggerModifier;
+  const savedSchema = Number(raw.schemaVersion);
+  const modifier = savedSchema >= 6 ? raw.triggerModifier : "ctrl";
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 6,
     provider:
       raw.provider === "deepseek" || raw.provider === "ollama"
         ? raw.provider
@@ -138,6 +242,23 @@ function normalizeLoadedSettings(rawValue: unknown): JapaneseReadingSettings {
       DEFAULT_SETTINGS.ollamaBaseUrl,
     ),
     ollamaModel: stringValue(raw.ollamaModel, DEFAULT_SETTINGS.ollamaModel),
+    ocrProvider: raw.ocrProvider === "ollama" ? "ollama" : "paddle",
+    paddleOcrBaseUrl: stringValue(
+      raw.paddleOcrBaseUrl,
+      DEFAULT_SETTINGS.paddleOcrBaseUrl,
+    ),
+    ocrOllamaModel: stringValue(
+      raw.ocrOllamaModel,
+      DEFAULT_SETTINGS.ocrOllamaModel,
+    ),
+    pdfOcrDefaultMode:
+      raw.pdfOcrDefaultMode === "word" || raw.pdfOcrDefaultMode === "sentence"
+        ? raw.pdfOcrDefaultMode
+        : DEFAULT_SETTINGS.pdfOcrDefaultMode,
+    pdfOcrReviewBeforeAnalyze:
+      typeof raw.pdfOcrReviewBeforeAnalyze === "boolean"
+        ? raw.pdfOcrReviewBeforeAnalyze
+        : DEFAULT_SETTINGS.pdfOcrReviewBeforeAnalyze,
     autoTrigger:
       typeof raw.autoTrigger === "boolean"
         ? raw.autoTrigger
@@ -255,6 +376,7 @@ export default class JapaneseReadingAssistantPlugin extends Plugin {
       },
     });
 
+    this.app.workspace.detachLeavesOfType(PDF_OCR_VIEW_TYPE);
     this.addSettingTab(new JapaneseReadingSettingTab(this.app, this));
     this.registerCommands();
     this.registerEditorExtension(
@@ -397,6 +519,29 @@ export default class JapaneseReadingAssistantPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "ocr-pdf-region",
+      name: "框选 PDF 区域并 OCR 解析",
+      icon: "scan-text",
+      checkCallback: (checking) => {
+        const containerEl = this.activePdfContainer();
+        if (!containerEl || !findPdfPageCanvas(containerEl)) {
+          return false;
+        }
+        if (!checking) {
+          void this.runPdfOcr(containerEl);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "open-pdf-ocr-panel",
+      name: "打开日语阅读助手",
+      icon: "languages",
+      callback: () => void this.openAssistantComposer(),
+    });
+
+    this.addCommand({
       id: "toggle-auto-trigger",
       name: "切换划选后自动查询",
       icon: "mouse-pointer-click",
@@ -485,6 +630,18 @@ export default class JapaneseReadingAssistantPlugin extends Plugin {
       "keydown",
       (event: KeyboardEvent) => {
         this.updateModifierState(document, event);
+        if (
+          event.altKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          !event.metaKey &&
+          event.key.toLowerCase() === "m"
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.openAssistantComposer();
+          return;
+        }
         if (event.key === "Escape" && this.popup?.isOpen()) {
           this.popup.close();
         }
@@ -507,6 +664,19 @@ export default class JapaneseReadingAssistantPlugin extends Plugin {
       (event: PointerEvent) => {
         const target = event.target as Node | null;
         this.updateModifierState(document, event);
+        const pdfContainer = this.findPdfContainer(target, document);
+        if (
+          pdfContainer &&
+          event.button === 0 &&
+          event.isPrimary &&
+          event.altKey &&
+          this.settings.autoTrigger
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.runPdfOcr(pdfContainer, event);
+          return;
+        }
         const surface = this.findMarkdownSelectionSurface(target);
         this.modifierGestures.delete(document);
         this.modifierGestureRoots.delete(document);
@@ -908,6 +1078,132 @@ export default class JapaneseReadingAssistantPlugin extends Plugin {
       anchor: centerAnchor(document),
       document,
     };
+  }
+
+  private activePdfContainer(): HTMLElement | null {
+    const leaf = this.app.workspace.activeLeaf;
+    return leaf?.view.getViewType() === "pdf" ? leaf.view.containerEl : null;
+  }
+
+  private async openAssistantComposer(): Promise<void> {
+    const activeDocument =
+      this.app.workspace.activeLeaf?.view.containerEl.ownerDocument ?? document;
+    const selected = this.readActiveSelection();
+    const context: SelectionContext = selected ?? {
+      text: "",
+      anchor: centerAnchor(activeDocument),
+      document: activeDocument,
+    };
+    const ocr = await checkPaddleOcrService(this.settings);
+    this.popup?.showComposer(context, {
+      initialText: context.text,
+      ocrOnline: ocr.online,
+      ocrMessage: ocr.message,
+      onAnalyze: (text) => {
+        void this.runAnalysis({ ...context, text }, "sentence");
+      },
+      onRestartOcr: () => {
+        void this.restartOcrFromComposer();
+      },
+    });
+  }
+
+  private async restartOcrFromComposer(): Promise<void> {
+    try {
+      await restartPaddleOcrService(this.settings);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
+        const ocr = await checkPaddleOcrService(this.settings);
+        if (ocr.online) {
+          break;
+        }
+      }
+      await this.openAssistantComposer();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`OCR 重启失败：${message}`, 7000);
+      await this.openAssistantComposer();
+    }
+  }
+
+  async startPdfOcrFromPanel(): Promise<void> {
+    const containerEl = this.activePdfContainer();
+    if (!containerEl) {
+      this.setPdfOcrStatus("请先打开一个 PDF 页面，再开始框选。");
+      new Notice("请先打开一个 PDF 页面。");
+      return;
+    }
+    await this.runPdfOcr(containerEl);
+  }
+
+  private setPdfOcrStatus(status: string): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(PDF_OCR_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof PdfOcrControlView) {
+        view.setStatus(status);
+      }
+    }
+  }
+
+  private findPdfContainer(
+    target: Node | null,
+    document: Document,
+  ): HTMLElement | null {
+    if (!target) {
+      return null;
+    }
+    let container: HTMLElement | null = null;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (
+        container ||
+        leaf.view.getViewType() !== "pdf" ||
+        leaf.view.containerEl.ownerDocument !== document ||
+        !leaf.view.containerEl.contains(target)
+      ) {
+        return;
+      }
+      if (findPdfPageCanvas(leaf.view.containerEl)) {
+        container = leaf.view.containerEl;
+      }
+    });
+    return container;
+  }
+
+  private async runPdfOcr(
+    containerEl: HTMLElement,
+    initialPointerEvent?: PointerEvent,
+  ): Promise<void> {
+    try {
+      this.setPdfOcrStatus(
+        initialPointerEvent ? "正在框选 PDF 区域…" : "请在 PDF 页面拖动框选日文。",
+      );
+      const crop = await capturePdfRegion(containerEl, initialPointerEvent);
+      const ocrLabel =
+        this.settings.ocrProvider === "paddle" ? "PP-OCRv5" : "本地 Ollama";
+      this.setPdfOcrStatus(`正在用 ${ocrLabel} 识别正文…`);
+      new Notice(`正在通过 ${ocrLabel} OCR 识别正文…`);
+      const text = await recognizeJapaneseFromImage(
+        this.settings,
+        crop.imageBase64,
+      );
+      this.setPdfOcrStatus("已识别，正在生成词汇与语法解析…");
+      void this.runAnalysis(
+        {
+          text,
+          anchor: crop.anchor,
+          document: crop.document,
+        },
+        "sentence",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== "已取消 PDF 框选。") {
+        this.setPdfOcrStatus(`OCR 未完成：${message}`);
+        new Notice(`PDF OCR：${message}`, 7000);
+      } else {
+        this.setPdfOcrStatus("已取消框选。");
+      }
+    }
   }
 
   private runEditorSelection(editor: Editor, forcedMode?: AnalysisMode): void {

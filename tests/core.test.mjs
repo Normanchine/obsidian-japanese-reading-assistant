@@ -8,6 +8,7 @@ import {
   isLikelyJapaneseSelection,
   isTriggerModifierSatisfied,
   normalizeSelection,
+  normalizeOcrText,
   parseModelResponse,
 } from "./.generated/core.mjs";
 
@@ -15,6 +16,20 @@ test("normalizes line endings, spaces, width, and surrounding whitespace", () =>
   assert.equal(
     normalizeSelection("  猫　が\r\n  好きです。  "),
     "猫 が\n好きです。",
+  );
+});
+
+test("keeps OCR body text while dropping decorative repetitions", () => {
+  assert.equal(
+    normalizeOcrText("おはようございます。\n111111\nいます。\nおはようございます。"),
+    "おはようございます。",
+  );
+});
+
+test("preserves separate Japanese OCR lines", () => {
+  assert.equal(
+    normalizeOcrText("これはテストです。\n次の文です。"),
+    "これはテストです。\n次の文です。",
   );
 });
 

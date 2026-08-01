@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type JapaneseReadingAssistantPlugin from "./main";
-import type { ProviderKind, TriggerModifier } from "./types";
+import type { OcrProviderKind, ProviderKind, TriggerModifier } from "./types";
 
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   deepseek: "DeepSeek API（云端）",
@@ -12,6 +12,11 @@ const MODIFIER_LABELS: Record<TriggerModifier, string> = {
   ctrl: "按住 Ctrl",
   alt: "按住 Alt",
   shift: "按住 Shift",
+};
+
+const OCR_PROVIDER_LABELS: Record<OcrProviderKind, string> = {
+  paddle: "PP-OCRv5（本机 CPU，推荐）",
+  ollama: "Ollama 视觉模型（兼容模式）",
 };
 
 export class JapaneseReadingSettingTab extends PluginSettingTab {
@@ -65,6 +70,7 @@ export class JapaneseReadingSettingTab extends PluginSettingTab {
     } else {
       this.renderOllamaSettings(containerEl);
     }
+    this.renderPdfOcrSettings(containerEl);
 
     new Setting(containerEl)
       .setName("测试当前模型")
@@ -214,6 +220,55 @@ export class JapaneseReadingSettingTab extends PluginSettingTab {
       });
   }
 
+  private renderPdfOcrSettings(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName("PDF OCR 引擎")
+      .setDesc(
+        "PP-OCRv5 只识别框选图像中的文字，随后再交给上方选定的翻译/解析模型；它不占用 Ollama 的显存。",
+      )
+      .addDropdown((dropdown) => {
+        for (const [value, label] of Object.entries(OCR_PROVIDER_LABELS)) {
+          dropdown.addOption(value, label);
+        }
+        dropdown
+          .setValue(this.plugin.settings.ocrProvider)
+          .onChange(async (value) => {
+            this.plugin.settings.ocrProvider = value as OcrProviderKind;
+            await this.plugin.saveSettings();
+            this.display();
+          });
+      });
+
+    if (this.plugin.settings.ocrProvider === "paddle") {
+      new Setting(containerEl)
+        .setName("PP-OCR 本地地址")
+        .setDesc("服务已部署在本机；通常不需要修改。若服务未启动，PDF OCR 会提示连接失败。")
+        .addText((text) => {
+          text
+            .setPlaceholder("http://127.0.0.1:7861")
+            .setValue(this.plugin.settings.paddleOcrBaseUrl)
+            .onChange(async (value) => {
+              this.plugin.settings.paddleOcrBaseUrl = value.trim();
+              await this.plugin.saveSettings();
+            });
+        });
+      return;
+    }
+
+    new Setting(containerEl)
+      .setName("Ollama OCR 模型")
+      .setDesc("兼容视觉模型。仅在你自行安装了视觉 OCR 模型时使用。")
+      .addText((text) => {
+        text
+          .setPlaceholder("视觉 OCR 模型名")
+          .setValue(this.plugin.settings.ocrOllamaModel)
+          .onChange(async (value) => {
+            this.plugin.settings.ocrOllamaModel = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+  }
+
   private renderBehaviorSection(containerEl: HTMLElement): void {
     containerEl.createEl("h3", { text: "划选行为" });
 
@@ -234,7 +289,7 @@ export class JapaneseReadingSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("自动查询触发键")
       .setDesc(
-        "可要求划选开始时同时按住一个键。选择 Alt 后，编辑模式中的 Alt+左键拖动会作为普通划选；关闭自动查询时恢复矩形选区。",
+        "只作用于可选文字，默认 Ctrl；PDF OCR 固定使用 Alt+左键拖框，不受此项影响。",
       )
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(MODIFIER_LABELS)) {
@@ -303,7 +358,7 @@ export class JapaneseReadingSettingTab extends PluginSettingTab {
     const privacy = containerEl.createDiv({ cls: "jra-settings__privacy" });
     privacy.createEl("strong", { text: "发送范围" });
     privacy.createEl("p", {
-      text: "插件只发送当前选中的文字和固定提示词，不发送笔记名、路径、Vault 信息或全文。结果只保存在内存缓存中，关闭 Obsidian 后消失。",
+      text: "插件只发送当前选中的文字，或你主动框选的 PDF 图片，及固定提示词；不会发送笔记名、路径、Vault 信息或全文。图片不写入 vault，OCR 文本和结果只保存在内存中，关闭 Obsidian 后消失。",
     });
 
     new Setting(containerEl)

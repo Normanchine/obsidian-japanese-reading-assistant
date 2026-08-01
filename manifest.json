@@ -1,9 +1,9 @@
 {
   "id": "japanese-reading-assistant",
   "name": "Japanese Reading Assistant",
-  "version": "1.1.0",
+  "version": "1.6.0",
   "minAppVersion": "1.11.5",
-  "description": "Translate selected Japanese and show contextual vocabulary with concise, color-linked grammar notes.",
+  "description": "OCR a selected PDF region locally, then translate Japanese with contextual vocabulary and concise, color-linked grammar notes.",
   "author": "Yicong Zhang",
   "authorUrl": "https://github.com/Normanchine",
   "isDesktopOnly": false

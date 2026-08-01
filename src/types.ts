@@ -1,4 +1,5 @@
 export type ProviderKind = "deepseek" | "ollama";
+export type OcrProviderKind = "paddle" | "ollama";
 export type AnalysisMode = "word" | "sentence";
 export type TriggerModifier = "none" | "ctrl" | "alt" | "shift";
 
@@ -16,13 +17,18 @@ export interface ModifierGesture {
 }
 
 export interface JapaneseReadingSettings {
-  schemaVersion: 1;
+  schemaVersion: 6;
   provider: ProviderKind;
   deepseekApiKey: string;
   deepseekBaseUrl: string;
   deepseekModel: string;
   ollamaBaseUrl: string;
   ollamaModel: string;
+  ocrProvider: OcrProviderKind;
+  paddleOcrBaseUrl: string;
+  ocrOllamaModel: string;
+  pdfOcrDefaultMode: AnalysisMode;
+  pdfOcrReviewBeforeAnalyze: boolean;
   autoTrigger: boolean;
   triggerModifier: TriggerModifier;
   triggerDelayMs: number;

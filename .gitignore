@@ -9,3 +9,5 @@ Thumbs.db
 .vscode/
 
 data.json
+.paddle-ocr-runtime/
+.paddle-ocr-logs/

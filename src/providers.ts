@@ -1,6 +1,7 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
 import {
   buildSystemPrompt,
+  normalizeOcrText,
   parseModelResponse,
   SENTENCE_SCHEMA,
   WORD_SCHEMA,
@@ -29,11 +30,27 @@ interface OllamaChatResponse {
   };
 }
 
+const OCR_PROMPT = [
+  "Text Recognition:",
+  "Return only the main Japanese body text.",
+  "Ignore illustrations, borders, furigana, page headers, page numbers, exercise numbers, and decorative text.",
+].join(" ");
+
 interface OllamaTagsResponse {
   models?: Array<{
     name?: string;
     model?: string;
   }>;
+}
+
+interface PaddleOcrResponse {
+  error?: string;
+  text?: string;
+}
+
+interface PaddleOcrHealthResponse {
+  status?: string;
+  engine?: string;
 }
 
 function trimTrailingSlash(url: string): string {
@@ -220,6 +237,142 @@ export async function analyzeJapanese(
       ? await callOllama(settings, text, mode)
       : await callDeepSeek(settings, text, mode);
   return parseModelResponse(raw, mode);
+}
+
+export async function recognizeJapaneseFromImage(
+  settings: JapaneseReadingSettings,
+  imageBase64: string,
+): Promise<string> {
+  if (settings.ocrProvider === "paddle") {
+    return callPaddleOcr(settings, imageBase64);
+  }
+
+  const model = settings.ocrOllamaModel.trim();
+  if (!model) {
+    throw new Error("PDF OCR 模型未配置");
+  }
+  if (!imageBase64) {
+    throw new Error("OCR 图像为空");
+  }
+
+  const response = await withTimeout(
+    requestUrl({
+      url: ollamaChatEndpoint(settings.ollamaBaseUrl),
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: OCR_PROMPT,
+            images: [imageBase64],
+          },
+        ],
+        stream: false,
+        keep_alive: "5m",
+        options: {
+          temperature: 0,
+          num_ctx: 4096,
+          num_predict: 160,
+        },
+      }),
+      throw: false,
+    }),
+    Math.max(settings.requestTimeoutSeconds, 180),
+  );
+  ensureSuccessfulResponse(response);
+
+  const data = response.json as OllamaChatResponse;
+  if (data.error) {
+    throw new Error(data.error);
+  }
+  const text = normalizeOcrText(data.message?.content ?? "");
+  if (!text) {
+    throw new Error("OCR 未识别出文本，请调整框选区域后重试");
+  }
+  return text.replace(/^```(?:text|markdown)?\s*/iu, "").replace(/\s*```$/u, "").trim();
+}
+
+async function callPaddleOcr(
+  settings: JapaneseReadingSettings,
+  imageBase64: string,
+): Promise<string> {
+  if (!imageBase64) {
+    throw new Error("OCR 图像为空");
+  }
+  const baseUrl = trimTrailingSlash(settings.paddleOcrBaseUrl);
+  if (!baseUrl) {
+    throw new Error("PP-OCR 服务地址未配置");
+  }
+
+  const response = await withTimeout(
+    requestUrl({
+      url: `${baseUrl}/ocr`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageBase64 }),
+      throw: false,
+    }),
+    Math.max(settings.requestTimeoutSeconds, 30),
+  );
+  ensureSuccessfulResponse(response);
+
+  const data = response.json as PaddleOcrResponse;
+  if (data.error) {
+    throw new Error(data.error);
+  }
+  const text = normalizeOcrText(data.text ?? "");
+  if (!text) {
+    throw new Error("OCR 未识别出文本，请调整框选区域后重试");
+  }
+  return text;
+}
+
+export async function checkPaddleOcrService(
+  settings: JapaneseReadingSettings,
+): Promise<{ online: boolean; message: string }> {
+  if (settings.ocrProvider !== "paddle") {
+    return { online: true, message: "Ollama OCR 已选中" };
+  }
+  try {
+    const response = await withTimeout(
+      requestUrl({
+        url: `${trimTrailingSlash(settings.paddleOcrBaseUrl)}/health`,
+        method: "GET",
+        throw: false,
+      }),
+      3,
+    );
+    ensureSuccessfulResponse(response);
+    const data = response.json as PaddleOcrHealthResponse;
+    return data.status === "ok"
+      ? { online: true, message: `${data.engine ?? "PP-OCRv5"} 已就绪` }
+      : { online: false, message: "OCR 服务返回异常状态" };
+  } catch {
+    return { online: false, message: "PP-OCR 未运行或无法连接" };
+  }
+}
+
+export async function restartPaddleOcrService(
+  settings: JapaneseReadingSettings,
+): Promise<void> {
+  if (settings.ocrProvider !== "paddle") {
+    throw new Error("当前 OCR 引擎不是 PP-OCRv5");
+  }
+  const response = await withTimeout(
+    requestUrl({
+      url: `${trimTrailingSlash(settings.paddleOcrBaseUrl)}/restart`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      throw: false,
+    }),
+    5,
+  );
+  ensureSuccessfulResponse(response);
 }
 
 export async function listDeepSeekModels(

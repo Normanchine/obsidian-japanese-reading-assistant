@@ -14,7 +14,15 @@ export interface PopupHandlers {
   onRetry: () => void;
 }
 
-type PopupState = "loading" | "result" | "error";
+export interface AssistantComposerOptions {
+  initialText: string;
+  ocrOnline: boolean;
+  ocrMessage: string;
+  onAnalyze: (text: string) => void;
+  onRestartOcr: () => void;
+}
+
+type PopupState = "loading" | "result" | "error" | "composer";
 
 export class FloatingResultPopup {
   private root: HTMLDivElement | null = null;
@@ -29,6 +37,7 @@ export class FloatingResultPopup {
   private manuallyPositioned = false;
   private state: PopupState = "loading";
   private currentResult: AnalysisResult | null = null;
+  private composerOptions: AssistantComposerOptions | null = null;
   private dragCleanup: (() => void) | null = null;
 
   constructor(private readonly handlers: PopupHandlers) {}
@@ -59,12 +68,30 @@ export class FloatingResultPopup {
     this.mode = mode;
     this.state = "loading";
     this.currentResult = null;
+    this.composerOptions = null;
     this.manuallyPositioned = keepPosition;
     this.renderShell();
     this.renderLoading();
     if (!keepPosition) {
       this.position(context.anchor);
     }
+  }
+
+  showComposer(
+    context: SelectionContext,
+    options: AssistantComposerOptions,
+  ): void {
+    this.ensureRoot(context.document);
+    this.context = context;
+    this.mode = "sentence";
+    this.state = "composer";
+    this.currentResult = null;
+    this.composerOptions = options;
+    this.manuallyPositioned = false;
+    this.renderShell();
+    this.renderComposer();
+    this.position(context.anchor);
+    this.root?.focus();
   }
 
   showResult(result: AnalysisResult): void {
@@ -104,6 +131,7 @@ export class FloatingResultPopup {
     this.ownerDocument = null;
     this.context = null;
     this.currentResult = null;
+    this.composerOptions = null;
     this.pinned = false;
     this.manuallyPositioned = false;
     if (notify) {
@@ -167,6 +195,14 @@ export class FloatingResultPopup {
       }),
     );
 
+    if (this.composerOptions) {
+      this.content = this.ownerDocument!.createElement("div");
+      this.content.className = "jra-popup__content";
+      this.root.append(this.content);
+      this.attachDragging(header);
+      return;
+    }
+
     const modeBar = this.ownerDocument!.createElement("div");
     modeBar.className = "jra-popup__mode-bar";
     modeBar.setAttribute("role", "tablist");
@@ -194,6 +230,59 @@ export class FloatingResultPopup {
 
     this.attachDragging(header);
     this.updateModeButtons();
+  }
+
+  private renderComposer(): void {
+    if (!this.content || !this.composerOptions) {
+      return;
+    }
+    this.content.replaceChildren();
+    const hint = this.ownerDocument!.createElement("p");
+    hint.className = "jra-popup__assistant-hint";
+    hint.textContent = "粘贴或输入日文，点击解析后将同时生成词汇与语法内容。";
+    this.content.append(hint);
+
+    const textArea = this.ownerDocument!.createElement("textarea");
+    textArea.className = "jra-popup__assistant-input";
+    textArea.placeholder = "在这里输入日文句子…";
+    textArea.value = this.composerOptions.initialText;
+    textArea.setAttribute("aria-label", "输入要解析的日文");
+    this.content.append(textArea);
+
+    const ocrState = this.ownerDocument!.createElement("div");
+    ocrState.className = "jra-popup__ocr-state";
+    const lamp = this.ownerDocument!.createElement("span");
+    lamp.className = "jra-popup__ocr-lamp";
+    lamp.classList.toggle("is-online", this.composerOptions.ocrOnline);
+    lamp.classList.toggle("is-offline", !this.composerOptions.ocrOnline);
+    lamp.setAttribute("aria-hidden", "true");
+    const ocrText = this.ownerDocument!.createElement("span");
+    ocrText.textContent = this.composerOptions.ocrMessage;
+    const restart = this.ownerDocument!.createElement("button");
+    restart.type = "button";
+    restart.className = "jra-popup__ocr-restart";
+    restart.textContent = this.composerOptions.ocrOnline ? "重启 OCR" : "启动 / 重试 OCR";
+    restart.addEventListener("click", () => this.composerOptions?.onRestartOcr());
+    ocrState.append(lamp, ocrText, restart);
+    this.content.append(ocrState);
+
+    const actions = this.ownerDocument!.createElement("div");
+    actions.className = "jra-popup__assistant-actions";
+    const analyze = this.ownerDocument!.createElement("button");
+    analyze.type = "button";
+    analyze.className = "mod-cta";
+    analyze.textContent = "解析输入";
+    analyze.addEventListener("click", () => {
+      const text = textArea.value.trim();
+      if (!text) {
+        textArea.focus();
+        return;
+      }
+      this.composerOptions?.onAnalyze(text);
+    });
+    actions.append(analyze);
+    this.content.append(actions);
+    window.setTimeout(() => textArea.focus(), 0);
   }
 
   private makeModeButton(mode: AnalysisMode, text: string): HTMLButtonElement {

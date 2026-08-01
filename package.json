@@ -1,6 +1,6 @@
 {
   "name": "obsidian-japanese-reading-assistant",
-  "version": "1.1.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Obsidian Japanese reading assistant with DeepSeek and Ollama providers.",
   "license": "MIT",

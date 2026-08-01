@@ -113,6 +113,25 @@ export function normalizeSelection(input: string): string {
     .trim();
 }
 
+export function normalizeOcrText(input: string): string {
+  const normalized = normalizeSelection(input);
+  const retained: string[] = [];
+  for (const line of normalized.split("\n").map((item) => item.trim())) {
+    if (!line || !JAPANESE_PATTERN.test(line)) {
+      continue;
+    }
+    const existing = retained.join("\n");
+    if (retained.includes(line) || (existing && line.includes(existing))) {
+      break;
+    }
+    if (existing && existing.includes(line)) {
+      continue;
+    }
+    retained.push(line);
+  }
+  return retained.length > 0 ? retained.join("\n") : normalized;
+}
+
 function stripOuterWrapping(input: string): string {
   const pairs: Array<[string, string]> = [
     ["「", "」"],
